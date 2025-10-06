@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Scan, ShoppingCart, CheckCircle, AlertCircle, Package } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Scan, ShoppingCart, CheckCircle, AlertCircle, Package, Zap, Percent } from 'lucide-react';
 import { useSupabaseInventory } from '../context/SupabaseInventoryContext';
 
 function POSSystem() {
@@ -8,25 +8,68 @@ function POSSystem() {
   const [barcode, setBarcode] = useState('');
   const [lastSale, setLastSale] = useState<{ success: boolean; message: string; product?: any } | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [scannerActive, setScannerActive] = useState(true);
+  const [scanHistory, setScanHistory] = useState<string[]>([]);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
 
-  const handleScan = async () => {
+  // Discount states
+  const [discountType, setDiscountType] = useState<'none' | 'percentage' | 'fixed'>('none');
+  const [discountValue, setDiscountValue] = useState(0);
+
+  // Auto-focus the barcode input when scanner is active
+  useEffect(() => {
+    if (scannerActive && barcodeInputRef.current) {
+      barcodeInputRef.current.focus();
+    }
+  }, [scannerActive, lastSale]);
+
+  // Handle barcode scanner input
+  const handleBarcodeInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setBarcode(value);
+
+    // Auto-process when barcode is complete (typically 8-13 characters)
+    if (value.length >= 8 && scannerActive) {
+      // Small delay to ensure full barcode is captured
+      setTimeout(() => {
+        if (e.target.value === value) { // Ensure value hasn't changed
+          handleScan(value);
+        }
+      }, 100);
+    }
+  };
+
+  // Handle Enter key press (common with barcode scanners)
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && barcode.trim()) {
+      e.preventDefault();
+      handleScan(barcode);
+    }
+  };
+
+  const handleScan = async (scannedBarcode?: string) => {
+    const barcodeToScan = scannedBarcode || barcode;
+    if (!selectedStore || !barcodeToScan.trim()) return;
     if (!selectedStore || !barcode.trim()) return;
 
     setIsScanning(true);
 
     try {
-      // Simulate scanning delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Add to scan history
+      setScanHistory(prev => [barcodeToScan, ...prev.slice(0, 9)]);
 
-      const product = await getProductByBarcode(barcode);
+      const product = await getProductByBarcode(barcodeToScan);
 
       if (!product) {
         setLastSale({ success: false, message: 'Product not found' });
         setIsScanning(false);
+        setBarcode('');
+        // Re-focus input for next scan
+        setTimeout(() => barcodeInputRef.current?.focus(), 100);
         return;
       }
 
-      const success = await sellProduct(selectedStore, barcode);
+      const success = await sellProduct(selectedStore, barcodeToScan);
 
       if (success) {
         setLastSale({
@@ -43,6 +86,8 @@ function POSSystem() {
       }
 
       setBarcode('');
+      // Re-focus input for next scan
+      setTimeout(() => barcodeInputRef.current?.focus(), 100);
     } catch (error) {
       console.error('Error processing sale:', error);
       setLastSale({
@@ -127,29 +172,64 @@ function POSSystem() {
               </select>
             </div>
 
+            {/* Scanner Status */}
+            <div className="mb-6">
+              <div className="flex items-center justify-between p-4 bg-gradient-to-r from-green-50 to-blue-50 rounded-xl border border-green-200">
+                <div className="flex items-center space-x-3">
+                  <div className={`w-3 h-3 rounded-full ${scannerActive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
+                  <span className="font-semibold text-brand-black">
+                    Scanner Status: {scannerActive ? 'Active & Ready' : 'Inactive'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setScannerActive(!scannerActive)}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                    scannerActive
+                      ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                      : 'bg-green-100 text-green-700 hover:bg-green-200'
+                  }`}
+                >
+                  {scannerActive ? 'Disable' : 'Enable'} Scanner
+                </button>
+              </div>
+            </div>
+
             {/* Barcode Input */}
             <div className="mb-8">
-              <label className="block text-sm font-bold text-brand-black mb-3 uppercase tracking-wider">Product Barcode</label>
+              <label className="block text-sm font-bold text-brand-black mb-3 uppercase tracking-wider">
+                <div className="flex items-center space-x-2">
+                  <Zap className="w-4 h-4" />
+                  <span>Barcode Scanner Input</span>
+                </div>
+              </label>
               <div className="flex space-x-4">
                 <div className="flex-1 relative">
+                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <Scan className={`w-5 h-5 ${scannerActive ? 'text-green-600' : 'text-modern-400'}`} />
+                  </div>
                   <input
+                    ref={barcodeInputRef}
                     type="text"
                     value={barcode}
-                    onChange={(e) => setBarcode(e.target.value)}
-                    placeholder="Scan or enter barcode..."
-                    className="input-modern text-lg font-mono tracking-wider"
-                    disabled={isScanning}
-                    autoFocus
+                    onChange={handleBarcodeInput}
+                    onKeyPress={handleKeyPress}
+                    placeholder={scannerActive ? "Ready for barcode scan..." : "Scanner disabled"}
+                    disabled={!selectedStore || !scannerActive || isScanning}
+                    className={`input-modern pl-12 text-lg font-mono tracking-wider ${
+                      scannerActive ? 'border-green-300 focus:border-green-500' : 'border-gray-300'
+                    } ${!selectedStore ? 'opacity-50' : ''}`}
+                    autoComplete="off"
+                    spellCheck="false"
                   />
                   <div className="absolute right-4 top-1/2 transform -translate-y-1/2">
                     <div className={`w-3 h-3 rounded-full ${barcode ? 'bg-accent-success animate-pulse' : 'bg-modern-300'}`}></div>
                   </div>
                 </div>
                 <button
-                  onClick={handleScan}
-                  disabled={!selectedStore || !barcode.trim() || isScanning}
+                  onClick={() => handleScan()}
+                  disabled={!selectedStore || !barcode.trim() || isScanning || !scannerActive}
                   className={`px-8 py-4 rounded-xl font-bold text-lg transition-all duration-200 flex items-center space-x-3 ${
-                    !selectedStore || !barcode.trim() || isScanning
+                    !selectedStore || !barcode.trim() || isScanning || !scannerActive
                       ? 'bg-modern-200 text-modern-500 cursor-not-allowed'
                       : 'btn-primary hover:scale-105'
                   }`}
@@ -167,6 +247,65 @@ function POSSystem() {
                   )}
                 </button>
               </div>
+            </div>
+
+            {/* Quick Discount Section */}
+            <div className="card-modern">
+              <div className="flex items-center space-x-3 mb-4">
+                <div className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center">
+                  <Percent className="w-4 h-4 text-purple-600" />
+                </div>
+                <h4 className="text-lg font-bold text-brand-black">Quick Discount</h4>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+                <button
+                  onClick={() => { setDiscountType('percentage'); setDiscountValue(5); }}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    discountType === 'percentage' && discountValue === 5
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-purple-600 border border-purple-200 hover:bg-purple-50'
+                  }`}
+                >
+                  5% Off
+                </button>
+                <button
+                  onClick={() => { setDiscountType('percentage'); setDiscountValue(10); }}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    discountType === 'percentage' && discountValue === 10
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-purple-600 border border-purple-200 hover:bg-purple-50'
+                  }`}
+                >
+                  10% Off
+                </button>
+                <button
+                  onClick={() => { setDiscountType('percentage'); setDiscountValue(15); }}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    discountType === 'percentage' && discountValue === 15
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-purple-600 border border-purple-200 hover:bg-purple-50'
+                  }`}
+                >
+                  15% Off
+                </button>
+                <button
+                  onClick={() => { setDiscountType('none'); setDiscountValue(0); }}
+                  className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    discountType === 'none'
+                      ? 'bg-red-600 text-white'
+                      : 'bg-white text-red-600 border border-red-200 hover:bg-red-50'
+                  }`}
+                >
+                  No Discount
+                </button>
+              </div>
+              {discountType !== 'none' && (
+                <div className="p-3 bg-purple-50 rounded-lg border border-purple-200">
+                  <p className="text-sm text-purple-700 font-medium">
+                    Active: {discountType === 'percentage' ? `${discountValue}% discount` : `$${discountValue} off`}
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Sale Result */}
@@ -263,6 +402,35 @@ function POSSystem() {
             </div>
           </div>
         </div>
+
+        {/* Scan History */}
+        {scanHistory.length > 0 && (
+          <div className="card-modern">
+            <div className="p-6">
+              <div className="flex items-center space-x-3 mb-4">
+                <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
+                  <Scan className="w-4 h-4 text-blue-600" />
+                </div>
+                <h4 className="text-lg font-bold text-brand-black">Recent Scans</h4>
+                <span className="ml-auto text-sm text-modern-500">{scanHistory.length} scans</span>
+              </div>
+              <div className="space-y-2 max-h-32 overflow-y-auto">
+                {scanHistory.map((scan, index) => (
+                  <div key={index} className="flex items-center justify-between p-2 bg-modern-50 rounded-lg">
+                    <span className="font-mono text-sm text-brand-black">{scan}</span>
+                    <span className="text-xs text-modern-500">#{scanHistory.length - index}</span>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={() => setScanHistory([])}
+                className="mt-3 text-sm text-red-600 hover:text-red-700 font-medium"
+              >
+                Clear History
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Store Info */}
         <div className="card-modern relative overflow-hidden">

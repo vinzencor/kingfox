@@ -7,20 +7,58 @@ function BarcodeManagement() {
   const { categories, sizes, loading, error, sizeStock } = useSupabaseInventory();
   const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set());
 
+  // Debug logging
+  useEffect(() => {
+    console.log('🔍 BarcodeManagement Debug Info:');
+    console.log('- Loading:', loading);
+    console.log('- Error:', error);
+    console.log('- Categories:', categories?.length || 0);
+    console.log('- SizeStock:', sizeStock?.length || 0);
+    console.log('- SizeStock data:', sizeStock);
+    console.log('- Expanded products:', Array.from(expandedProducts));
+
+    // Check if we have any data at all
+    if (sizeStock && sizeStock.length > 0) {
+      console.log('✅ SizeStock data available:', sizeStock[0]);
+    } else {
+      console.log('❌ No SizeStock data available');
+    }
+  }, [categories, sizeStock, expandedProducts, loading, error]);
+
   // Effect to render barcodes when products are expanded
   useEffect(() => {
-    if (!sizeStock) return;
+    if (!sizeStock || expandedProducts.size === 0) return;
 
-    expandedProducts.forEach(productKey => {
-      const [variantId, colorId] = productKey.split('-');
-      const productBarcodes = getProductBarcodes(variantId, colorId);
+    console.log('🎨 Triggering barcode rendering for expanded products:', Array.from(expandedProducts));
 
-      productBarcodes.forEach(stock => {
-        const canvasId = `barcode-${stock.id}`;
-        setTimeout(() => renderBarcode(stock.barcode, canvasId), 100);
+    // Use a longer timeout to ensure DOM elements are ready
+    const timeoutId = setTimeout(() => {
+      expandedProducts.forEach(productKey => {
+        const [variantId, colorId] = productKey.split('-');
+        const productBarcodes = getProductBarcodes(variantId, colorId);
+
+        console.log(`📦 Rendering barcodes for ${productKey}:`, productBarcodes.length);
+
+        productBarcodes.forEach(stock => {
+          const canvasId = `barcode-${stock.id}`;
+          console.log(`🎯 Attempting to render barcode: ${stock.barcode} on canvas: ${canvasId}`);
+          renderBarcode(stock.barcode, canvasId);
+        });
       });
-    });
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
   }, [expandedProducts, sizeStock]);
+
+  // Additional effect to re-render barcodes when sizeStock changes
+  useEffect(() => {
+    if (sizeStock && sizeStock.length > 0 && expandedProducts.size > 0) {
+      console.log('🔄 SizeStock data updated, re-rendering visible barcodes');
+      setTimeout(() => {
+        reRenderAllBarcodes();
+      }, 500);
+    }
+  }, [sizeStock]);
 
   const toggleProductExpansion = (productKey: string) => {
     setExpandedProducts(prev => {
@@ -35,25 +73,88 @@ function BarcodeManagement() {
   };
 
   const renderBarcode = (barcodeValue: string, canvasId: string) => {
-    setTimeout(() => {
+    // Try multiple times to find the canvas element
+    let attempts = 0;
+    const maxAttempts = 15;
+
+    const tryRender = () => {
       const canvas = document.getElementById(canvasId) as HTMLCanvasElement;
+
       if (canvas && barcodeValue) {
         try {
-          JsBarcode(canvas, barcodeValue, {
+          // Ensure canvas has proper dimensions
+          canvas.width = 200;
+          canvas.height = 80;
+
+          // Clear any existing content
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Set white background
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+
+          // Validate barcode value
+          if (!barcodeValue || barcodeValue.trim() === '') {
+            throw new Error('Empty barcode value');
+          }
+
+          console.log(`🎯 Rendering barcode: "${barcodeValue}" on canvas: ${canvasId}`);
+
+          // Render barcode with JsBarcode
+          JsBarcode(canvas, barcodeValue.trim(), {
             format: "CODE128",
             width: 2,
-            height: 40,
+            height: 50,
             displayValue: true,
-            fontSize: 12,
-            margin: 5,
+            fontSize: 14,
+            margin: 10,
             background: "#ffffff",
-            lineColor: "#000000"
+            lineColor: "#000000",
+            textAlign: "center",
+            textPosition: "bottom"
           });
+
+          console.log(`✅ Barcode rendered successfully for ${canvasId}: ${barcodeValue}`);
+
+          // Verify the canvas has content
+          const imageData = ctx?.getImageData(0, 0, canvas.width, canvas.height);
+          const hasContent = imageData?.data.some((pixel, index) => index % 4 < 3 && pixel < 255);
+          console.log(`📊 Canvas has content: ${hasContent}`);
+
+          // Force a repaint
+          canvas.style.display = 'none';
+          canvas.offsetHeight; // Trigger reflow
+          canvas.style.display = 'block';
+
         } catch (error) {
-          console.error('Error generating barcode:', error);
+          console.error(`❌ Error rendering barcode for ${canvasId}:`, error);
+
+          // Fallback: draw a simple rectangle as placeholder
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#f0f0f0';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#666';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('Barcode Error', canvas.width / 2, canvas.height / 2 - 10);
+            ctx.fillText(barcodeValue || 'N/A', canvas.width / 2, canvas.height / 2 + 10);
+          }
         }
+      } else if (attempts < maxAttempts) {
+        attempts++;
+        console.log(`⏳ Canvas not ready for ${canvasId}, attempt ${attempts}/${maxAttempts}`);
+        setTimeout(tryRender, 150);
+      } else {
+        console.error(`❌ Failed to find canvas element: ${canvasId} after ${maxAttempts} attempts`);
+        console.log('Available elements:', document.querySelectorAll(`[id*="barcode"]`));
       }
-    }, 100);
+    };
+
+    // Start rendering after a short delay
+    setTimeout(tryRender, 100);
   };
 
   const getProductBarcodes = (variantId: string, colorId: string) => {
@@ -61,6 +162,20 @@ function BarcodeManagement() {
     return sizeStock.filter(stock =>
       stock.variant_id === variantId && stock.color_id === colorId
     );
+  };
+
+  // Function to manually re-render all visible barcodes
+  const reRenderAllBarcodes = () => {
+    console.log('🔄 Re-rendering all visible barcodes...');
+    expandedProducts.forEach(productKey => {
+      const [variantId, colorId] = productKey.split('-');
+      const productBarcodes = getProductBarcodes(variantId, colorId);
+
+      productBarcodes.forEach(stock => {
+        const canvasId = `barcode-${stock.id}`;
+        setTimeout(() => renderBarcode(stock.barcode, canvasId), 50);
+      });
+    });
   };
 
   if (loading || !sizeStock) {
@@ -98,10 +213,58 @@ function BarcodeManagement() {
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
       <div className="text-center lg:text-left">
-        <h2 className="text-4xl font-bold text-brand-black mb-3">
-          Barcode <span className="text-gradient-yellow">Studio</span>
-        </h2>
-        <p className="text-modern-600 text-lg font-medium">View individual size barcodes by clicking on products</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-4xl font-bold text-brand-black mb-3">
+              Barcode <span className="text-gradient-yellow">Studio</span>
+            </h2>
+            <p className="text-modern-600 text-lg font-medium">View individual size barcodes by clicking on products</p>
+          </div>
+          <div className="flex space-x-2">
+            <button
+              onClick={reRenderAllBarcodes}
+              className="px-4 py-2 bg-brand-yellow text-brand-black rounded-lg hover:bg-yellow-400 transition-colors duration-200 font-medium"
+            >
+              🔄 Re-render Barcodes
+            </button>
+            <button
+              onClick={() => {
+                const testCanvas = document.getElementById('test-barcode') as HTMLCanvasElement;
+                if (testCanvas) {
+                  try {
+                    JsBarcode(testCanvas, '123456789012', {
+                      format: "CODE128",
+                      width: 2,
+                      height: 50,
+                      displayValue: true,
+                      fontSize: 12,
+                      margin: 10,
+                      background: "#ffffff",
+                      lineColor: "#000000"
+                    });
+                    console.log('✅ Test barcode rendered successfully');
+                  } catch (error) {
+                    console.error('❌ Test barcode failed:', error);
+                  }
+                }
+              }}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-200 font-medium"
+            >
+              🧪 Test Barcode
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Test Barcode Canvas */}
+      <div className="card-modern p-4 text-center">
+        <h3 className="text-lg font-bold text-brand-black mb-2">Test Barcode (Click "🧪 Test Barcode" to render)</h3>
+        <canvas
+          id="test-barcode"
+          width="200"
+          height="80"
+          className="mx-auto border border-modern-200 rounded"
+        ></canvas>
       </div>
 
 
@@ -187,7 +350,10 @@ function BarcodeManagement() {
                                         </div>
                                         <canvas
                                           id={canvasId}
-                                          className="mx-auto mb-2"
+                                          width="200"
+                                          height="80"
+                                          className="mx-auto mb-2 border border-modern-200 rounded"
+                                          style={{ maxWidth: '100%' }}
                                         ></canvas>
                                         <p className="text-xs font-mono text-modern-600 tracking-wider">
                                           {stock.barcode}

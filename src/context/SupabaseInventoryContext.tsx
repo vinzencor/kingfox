@@ -493,37 +493,30 @@ export function SupabaseInventoryProvider({ children }: { children: React.ReactN
 
   const updateStock = async (categoryId: string, variantId: string, colorId: string, sizeId: string, quantity: number) => {
     try {
-      const { error } = await supabase
-        .from('warehouse_inventory')
-        .upsert([{
-          variant_id: variantId,
-          color_id: colorId,
-          size_id: sizeId,
-          quantity
-        }], {
-          onConflict: 'variant_id,color_id,size_id'
-        });
+      // Find existing size_stock record
+      const existingStock = sizeStock.find(
+        stock => stock.variant_id === variantId && stock.color_id === colorId && stock.size_id === sizeId
+      );
 
-      if (error) throw error;
+      if (existingStock) {
+        // Update existing size_stock record
+        const { error } = await supabase
+          .from('size_stock')
+          .update({ warehouse_stock: quantity })
+          .eq('id', existingStock.id);
 
-      setCategories(prev => prev.map(cat =>
-        cat.id === categoryId
-          ? {
-              ...cat,
-              variants: cat.variants.map(variant =>
-                variant.id === variantId
-                  ? {
-                      ...variant,
-                      colors: variant.colors.map(color =>
-                        color.id === colorId
-                          ? { ...color, sizes: { ...color.sizes, [sizeId]: quantity } }
-                          : color
-                      )
-                    }
-                  : variant
-              )
-            }
-          : cat
+        if (error) throw error;
+      } else {
+        // If no size_stock record exists, we can't update it
+        // This should be created through the "Manage Stock" flow instead
+        throw new Error('No size stock record found. Please create a barcode first using "Manage Stock".');
+      }
+
+      // Update local sizeStock state
+      setSizeStock(prev => prev.map(stock =>
+        stock.variant_id === variantId && stock.color_id === colorId && stock.size_id === sizeId
+          ? { ...stock, warehouse_stock: quantity }
+          : stock
       ));
     } catch (err: any) {
       setError(err.message);

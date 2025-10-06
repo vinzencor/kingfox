@@ -1,0 +1,370 @@
+-- Fix Foreign Key Constraints Issue
+-- Run this script to handle the store_audit_log foreign key constraint
+
+-- First, let's see what's in the audit log
+SELECT 
+    'AUDIT LOG ENTRIES' as section,
+    COUNT(*) as total_entries
+FROM store_audit_log;
+
+-- Show which stores are referenced in audit log
+SELECT 
+    'STORES IN AUDIT LOG' as section,
+    s.name as store_name,
+    s.store_code,
+    COUNT(sal.id) as audit_entries
+FROM store_audit_log sal
+JOIN stores s ON sal.store_id = s.id
+GROUP BY s.id, s.name, s.store_code
+ORDER BY s.store_code;
+
+-- Clean up audit log entries for test stores first
+DELETE FROM store_audit_log WHERE store_id IN (
+    SELECT id FROM stores WHERE store_code IN ('STORE001', 'STORE002')
+);
+
+-- Now clean up other related data
+DELETE FROM store_sessions WHERE store_user_id IN (
+    SELECT id FROM store_users WHERE email LIKE '%warehousepro.com'
+);
+
+DELETE FROM store_inventory WHERE store_id IN (
+    SELECT id FROM stores WHERE store_code IN ('STORE001', 'STORE002')
+);
+
+DELETE FROM sales_transactions WHERE store_id IN (
+    SELECT id FROM stores WHERE store_code IN ('STORE001', 'STORE002')
+);
+
+-- Now we can safely delete store users and stores
+DELETE FROM store_users WHERE email LIKE '%warehousepro.com';
+
+DELETE FROM stores WHERE store_code IN ('STORE001', 'STORE002');
+
+-- Clean up test products
+DELETE FROM size_stock WHERE barcode LIKE 'TSH001%';
+DELETE FROM colors WHERE name IN ('Navy Blue', 'White') AND variant_id IN (
+    SELECT v.id FROM variants v 
+    JOIN categories c ON v.category_id = c.id 
+    WHERE c.name = 'T-Shirts' AND v.name = 'Basic Cotton Tee'
+);
+DELETE FROM variants WHERE name = 'Basic Cotton Tee';
+DELETE FROM categories WHERE name IN ('T-Shirts', 'Jeans');
+
+-- Drop and recreate ALL store-related functions with correct return types
+DROP FUNCTION IF EXISTS create_store_user(UUID, TEXT, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS authenticate_store_user(TEXT, TEXT);
+DROP FUNCTION IF EXISTS validate_store_session(TEXT);
+DROP FUNCTION IF EXISTS delete_store_with_dependencies(UUID);
+
+-- Create store user function with proper UPSERT
+CREATE OR REPLACE FUNCTION create_store_user(
+    p_store_id UUID,
+    p_email TEXT,
+    p_password TEXT,
+    p_name TEXT,
+    p_role TEXT DEFAULT 'manager'
+)
+RETURNS UUID AS $$
+DECLARE
+    existing_user_id UUID;
+    new_user_id UUID;
+BEGIN
+    -- Check if user already exists
+    SELECT id INTO existing_user_id
+    FROM store_users
+    WHERE email = p_email;
+
+    IF existing_user_id IS NOT NULL THEN
+        -- Update existing user
+        UPDATE store_users
+        SET
+            store_id = p_store_id,
+            password_hash = crypt(p_password, gen_salt('bf')),
+            name = p_name,
+            role = p_role,
+            is_active = true,
+            updated_at = NOW()
+        WHERE id = existing_user_id;
+
+        RETURN existing_user_id;
+    ELSE
+        -- Create new user
+        INSERT INTO store_users (store_id, email, password_hash, name, role, is_active)
+        VALUES (p_store_id, p_email, crypt(p_password, gen_salt('bf')), p_name, p_role, true)
+        RETURNING id INTO new_user_id;
+
+        RETURN new_user_id;
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Authenticate store user function with correct return types
+CREATE OR REPLACE FUNCTION authenticate_store_user(user_email TEXT, user_password TEXT)
+RETURNS TABLE(
+    user_id UUID,
+    store_id UUID,
+    store_name TEXT,
+    user_name TEXT,
+    user_role TEXT,
+    session_token TEXT
+) AS $$
+DECLARE
+    user_record RECORD;
+    new_session_token TEXT;
+BEGIN
+    -- Find user by email
+    SELECT su.id, su.store_id, su.name, su.role, s.name, su.password_hash
+    INTO user_record
+    FROM store_users su
+    JOIN stores s ON su.store_id = s.id
+    WHERE su.email = user_email AND su.is_active = true AND s.is_active = true;
+
+    -- Check if user exists and password matches
+    IF user_record.id IS NULL OR user_record.password_hash != crypt(user_password, user_record.password_hash) THEN
+        RETURN;
+    END IF;
+
+    -- Generate session token
+    new_session_token := encode(gen_random_bytes(32), 'base64');
+
+    -- Clean up old sessions for this user
+    DELETE FROM store_sessions WHERE store_user_id = user_record.id AND expires_at < NOW();
+
+    -- Create new session
+    INSERT INTO store_sessions (store_user_id, session_token, expires_at)
+    VALUES (user_record.id, new_session_token, NOW() + INTERVAL '24 hours');
+
+    -- Update last login
+    UPDATE store_users SET last_login = NOW() WHERE id = user_record.id;
+
+    -- Return user info with explicit casting
+    RETURN QUERY SELECT
+        user_record.id,
+        user_record.store_id,
+        user_record.name::TEXT,
+        user_record.name::TEXT,
+        user_record.role::TEXT,
+        new_session_token;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Validate store session function with correct return types
+CREATE OR REPLACE FUNCTION validate_store_session(token TEXT)
+RETURNS TABLE(
+    user_id UUID,
+    store_id UUID,
+    store_name TEXT,
+    user_name TEXT,
+    user_role TEXT
+) AS $$
+DECLARE
+    session_record RECORD;
+BEGIN
+    -- Find valid session
+    SELECT ss.store_user_id, su.store_id, su.name, su.role, s.name
+    INTO session_record
+    FROM store_sessions ss
+    JOIN store_users su ON ss.store_user_id = su.id
+    JOIN stores s ON su.store_id = s.id
+    WHERE ss.session_token = token
+        AND ss.expires_at > NOW()
+        AND su.is_active = true
+        AND s.is_active = true;
+
+    IF session_record.store_user_id IS NULL THEN
+        RETURN;
+    END IF;
+
+    -- Update last accessed
+    UPDATE store_sessions SET last_accessed = NOW() WHERE session_token = token;
+
+    -- Return user info with explicit casting
+    RETURN QUERY SELECT
+        session_record.store_user_id,
+        session_record.store_id,
+        session_record.name::TEXT,
+        session_record.name::TEXT,
+        session_record.role::TEXT;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to delete store with all dependencies
+CREATE OR REPLACE FUNCTION delete_store_with_dependencies(p_store_id UUID)
+RETURNS BOOLEAN AS $$
+BEGIN
+    -- Delete in correct order to avoid foreign key constraints
+
+    -- Delete audit log entries
+    DELETE FROM store_audit_log WHERE store_id = p_store_id;
+
+    -- Delete store sessions
+    DELETE FROM store_sessions WHERE store_user_id IN (
+        SELECT id FROM store_users WHERE store_id = p_store_id
+    );
+
+    -- Delete sales transactions
+    DELETE FROM sales_transactions WHERE store_id = p_store_id;
+
+    -- Delete store inventory
+    DELETE FROM store_inventory WHERE store_id = p_store_id;
+
+    -- Delete store users
+    DELETE FROM store_users WHERE store_id = p_store_id;
+
+    -- Finally delete the store
+    DELETE FROM stores WHERE id = p_store_id;
+
+    RETURN TRUE;
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Now create fresh test data
+-- Create categories
+INSERT INTO categories (name) VALUES ('T-Shirts') ON CONFLICT (name) DO NOTHING;
+INSERT INTO categories (name) VALUES ('Jeans') ON CONFLICT (name) DO NOTHING;
+
+-- Create variants
+INSERT INTO variants (category_id, name) 
+SELECT c.id, 'Basic Cotton Tee' 
+FROM categories c 
+WHERE c.name = 'T-Shirts' 
+ON CONFLICT (category_id, name) DO NOTHING;
+
+-- Create colors
+INSERT INTO colors (variant_id, name, hex) 
+SELECT v.id, 'Navy Blue', '#1e3a8a'
+FROM variants v 
+JOIN categories c ON v.category_id = c.id 
+WHERE c.name = 'T-Shirts' AND v.name = 'Basic Cotton Tee'
+ON CONFLICT (variant_id, name) DO NOTHING;
+
+INSERT INTO colors (variant_id, name, hex) 
+SELECT v.id, 'White', '#ffffff'
+FROM variants v 
+JOIN categories c ON v.category_id = c.id 
+WHERE c.name = 'T-Shirts' AND v.name = 'Basic Cotton Tee'
+ON CONFLICT (variant_id, name) DO NOTHING;
+
+-- Create size stock with barcodes
+INSERT INTO size_stock (variant_id, color_id, size_id, barcode, price, warehouse_stock)
+SELECT v.id, col.id, 'S', 'TSH001S', 24.99, 150
+FROM variants v
+JOIN categories c ON v.category_id = c.id
+JOIN colors col ON col.variant_id = v.id
+WHERE c.name = 'T-Shirts' AND v.name = 'Basic Cotton Tee' AND col.name = 'Navy Blue'
+ON CONFLICT (variant_id, color_id, size_id) DO UPDATE SET
+    barcode = EXCLUDED.barcode,
+    price = EXCLUDED.price,
+    warehouse_stock = EXCLUDED.warehouse_stock;
+
+INSERT INTO size_stock (variant_id, color_id, size_id, barcode, price, warehouse_stock)
+SELECT v.id, col.id, 'M', 'TSH001M', 24.99, 200
+FROM variants v
+JOIN categories c ON v.category_id = c.id
+JOIN colors col ON col.variant_id = v.id
+WHERE c.name = 'T-Shirts' AND v.name = 'Basic Cotton Tee' AND col.name = 'Navy Blue'
+ON CONFLICT (variant_id, color_id, size_id) DO UPDATE SET
+    barcode = EXCLUDED.barcode,
+    price = EXCLUDED.price,
+    warehouse_stock = EXCLUDED.warehouse_stock;
+
+INSERT INTO size_stock (variant_id, color_id, size_id, barcode, price, warehouse_stock)
+SELECT v.id, col.id, 'L', 'TSH001L', 24.99, 180
+FROM variants v
+JOIN categories c ON v.category_id = c.id
+JOIN colors col ON col.variant_id = v.id
+WHERE c.name = 'T-Shirts' AND v.name = 'Basic Cotton Tee' AND col.name = 'Navy Blue'
+ON CONFLICT (variant_id, color_id, size_id) DO UPDATE SET
+    barcode = EXCLUDED.barcode,
+    price = EXCLUDED.price,
+    warehouse_stock = EXCLUDED.warehouse_stock;
+
+-- Create test stores
+INSERT INTO stores (name, location, email, phone, store_code, is_active) 
+VALUES 
+    ('Downtown Store', '123 Main Street, Downtown District', 'downtown@warehousepro.com', '+1-555-0101', 'STORE001', true),
+    ('Mall Store', '456 Shopping Center, Mall District', 'mall@warehousepro.com', '+1-555-0102', 'STORE002', true)
+ON CONFLICT (store_code) DO UPDATE SET
+    name = EXCLUDED.name,
+    location = EXCLUDED.location,
+    email = EXCLUDED.email,
+    phone = EXCLUDED.phone,
+    is_active = EXCLUDED.is_active;
+
+-- Create store users (now with UPSERT capability)
+SELECT create_store_user(
+    (SELECT id FROM stores WHERE store_code = 'STORE001'),
+    'downtown.manager@warehousepro.com',
+    'store123',
+    'John Downtown',
+    'manager'
+);
+
+SELECT create_store_user(
+    (SELECT id FROM stores WHERE store_code = 'STORE002'),
+    'mall.manager@warehousepro.com',
+    'store123',
+    'Jane Mall',
+    'manager'
+);
+
+-- Add inventory to stores
+INSERT INTO store_inventory (store_id, size_stock_id, quantity)
+SELECT 
+    s.id,
+    ss.id,
+    CASE 
+        WHEN ss.barcode = 'TSH001S' THEN 25
+        WHEN ss.barcode = 'TSH001M' THEN 30
+        WHEN ss.barcode = 'TSH001L' THEN 20
+        ELSE 15
+    END
+FROM stores s
+CROSS JOIN size_stock ss
+WHERE s.store_code IN ('STORE001', 'STORE002')
+    AND ss.barcode LIKE 'TSH001%'
+ON CONFLICT (store_id, size_stock_id) DO UPDATE SET 
+    quantity = EXCLUDED.quantity;
+
+-- Verification
+SELECT 
+    '=== FOREIGN KEY CONSTRAINTS FIXED ===' as status,
+    '' as details
+UNION ALL
+SELECT 
+    'Audit log entries cleaned:' as status,
+    'Test store audit entries removed' as details
+UNION ALL
+SELECT 
+    'Stores created:' as status,
+    COUNT(*)::text as details
+FROM stores WHERE store_code IN ('STORE001', 'STORE002')
+UNION ALL
+SELECT 
+    'Store users created:' as status,
+    COUNT(*)::text as details
+FROM store_users WHERE email LIKE '%warehousepro.com'
+UNION ALL
+SELECT 
+    'Size stock created:' as status,
+    COUNT(*)::text as details
+FROM size_stock WHERE barcode LIKE 'TSH001%'
+UNION ALL
+SELECT 
+    'Store inventory records:' as status,
+    COUNT(*)::text as details
+FROM store_inventory si
+JOIN stores s ON si.store_id = s.id
+WHERE s.store_code IN ('STORE001', 'STORE002');
+
+-- Show remaining audit log entries (should not include test stores)
+SELECT 
+    'REMAINING AUDIT ENTRIES' as section,
+    COUNT(*) as total_entries
+FROM store_audit_log;
+
+SELECT '✅ Foreign key constraints resolved! System ready for testing.' as final_status;

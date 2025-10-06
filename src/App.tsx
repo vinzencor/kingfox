@@ -1,39 +1,73 @@
 import React, { useState } from 'react';
-import { Package, Store, BarChart3, Scan, Home, Camera } from 'lucide-react';
+import { Package, Store, BarChart3, Scan, Home, Camera, User, LogOut, TrendingUp, Receipt, Users, DollarSign, ArrowLeftRight } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import ProductManagement from './components/ProductManagement';
 import BarcodeManagement from './components/BarcodeManagement';
 import StoreManagement from './components/StoreManagement';
 import POSSystem from './components/POSSystem';
 import PhotoManagement from './components/PhotoManagement';
+import AdminLogin from './components/AdminLogin';
+import EnhancedAdminDashboard from './components/EnhancedAdminDashboard';
+import EnhancedStorePOS from './components/EnhancedStorePOS';
+import CustomerManagement from './components/CustomerManagement';
+import StoreAccounts from './components/StoreAccounts';
+import ReturnsExchange from './components/ReturnsExchange';
 import { SupabaseInventoryProvider } from './context/SupabaseInventoryContext';
+import { AdminAuthProvider, useAdminAuth } from './context/AdminAuthContext';
 
-function App() {
+interface AppProps {
+  onBackToModeSelection?: () => void;
+}
+
+function AdminInterface({ onBackToModeSelection }: AppProps) {
+  const { user, logout } = useAdminAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
+
+  const handleLogout = () => {
+    logout();
+    if (onBackToModeSelection) {
+      onBackToModeSelection();
+    }
+  };
 
   const navItems = [
     { id: 'dashboard', icon: Home, label: 'Dashboard' },
+    { id: 'analytics', icon: TrendingUp, label: 'Enhanced Analytics' },
     { id: 'products', icon: Package, label: 'Products' },
     { id: 'barcodes', icon: BarChart3, label: 'Barcodes' },
     { id: 'stores', icon: Store, label: 'Stores' },
+    { id: 'customers', icon: Users, label: 'Customers' },
+    { id: 'accounts', icon: DollarSign, label: 'Store Accounts' },
+    { id: 'returns', icon: ArrowLeftRight, label: 'Returns & Exchange' },
     { id: 'photos', icon: Camera, label: 'Photos' },
     { id: 'pos', icon: Scan, label: 'POS System' },
+    { id: 'enhanced-pos', icon: Receipt, label: 'Enhanced POS' },
   ];
 
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
         return <Dashboard />;
+      case 'analytics':
+        return <EnhancedAdminDashboard />;
       case 'products':
         return <ProductManagement />;
       case 'barcodes':
         return <BarcodeManagement />;
       case 'stores':
         return <StoreManagement />;
+      case 'customers':
+        return <CustomerManagement />;
+      case 'accounts':
+        return <StoreAccounts />;
+      case 'returns':
+        return <ReturnsExchange />;
       case 'photos':
         return <PhotoManagement />;
       case 'pos':
         return <POSSystem />;
+      case 'enhanced-pos':
+        return <EnhancedStorePOS />;
       default:
         return <Dashboard />;
     }
@@ -56,6 +90,26 @@ function App() {
                   </h1>
                   <p className="text-modern-600 text-sm font-medium">Advanced Management System</p>
                 </div>
+              </div>
+
+              {/* Admin Profile & Logout */}
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-3 px-4 py-2 bg-modern-50 rounded-xl">
+                  <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
+                    <User className="w-4 h-4 text-blue-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-brand-black">{user?.name}</p>
+                    <p className="text-xs text-modern-600">{user?.role}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="btn-outline flex items-center space-x-2 text-red-600 border-red-200 hover:bg-red-50"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Logout</span>
+                </button>
               </div>
               <div className="flex items-center space-x-6">
                 <div className="flex items-center space-x-2 bg-modern-50 px-4 py-2 rounded-xl">
@@ -130,6 +184,24 @@ function App() {
       </div>
     </SupabaseInventoryProvider>
   );
+}
+
+function App({ onBackToModeSelection }: AppProps) {
+  return (
+    <AdminAuthProvider>
+      <AdminAppWrapper onBackToModeSelection={onBackToModeSelection} />
+    </AdminAuthProvider>
+  );
+}
+
+function AdminAppWrapper({ onBackToModeSelection }: AppProps) {
+  const { isAuthenticated } = useAdminAuth();
+
+  if (!isAuthenticated) {
+    return <AdminLogin onLoginSuccess={() => {}} onBackToModeSelection={onBackToModeSelection} />;
+  }
+
+  return <AdminInterface onBackToModeSelection={onBackToModeSelection} />;
 }
 
 export default App;

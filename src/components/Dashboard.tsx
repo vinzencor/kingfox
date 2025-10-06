@@ -38,9 +38,11 @@ function Dashboard() {
           .select(`
             *,
             stores (name, location),
-            variants (name, categories (name)),
-            colors (name),
-            sizes (name)
+            size_stock (
+              variants (name, categories (name)),
+              colors (name),
+              sizes (name)
+            )
           `)
           .order('created_at', { ascending: false })
           .limit(10);
@@ -67,7 +69,7 @@ function Dashboard() {
           activities.push({
             type: 'sale',
             title: 'Sale Completed',
-            description: `${sale.variants?.name} sold at ${sale.stores?.name}`,
+            description: `${sale.size_stock?.variants?.name} sold at ${sale.stores?.name}`,
             time: sale.created_at,
             amount: sale.total_amount,
             icon: ShoppingCart,

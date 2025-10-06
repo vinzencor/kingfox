@@ -5,6 +5,37 @@ const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYm
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+// Store Authentication Types
+export interface StoreUser {
+  id: string;
+  store_id: string;
+  email: string;
+  name: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  last_login: string | null;
+}
+
+export interface StoreSession {
+  user_id: string;
+  store_id: string;
+  store_name: string;
+  user_name: string;
+  user_role: string;
+  session_token?: string;
+}
+
+export interface StoreAuthResponse {
+  user_id: string;
+  store_id: string;
+  store_name: string;
+  user_name: string;
+  user_role: string;
+  session_token: string;
+}
+
 // Database Types
 export interface Database {
   public: {
@@ -135,6 +166,10 @@ export interface Database {
           id: string;
           name: string;
           location: string;
+          is_active: boolean;
+          store_code: string;
+          phone: string | null;
+          email: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -142,6 +177,10 @@ export interface Database {
           id?: string;
           name: string;
           location: string;
+          is_active?: boolean;
+          store_code?: string;
+          phone?: string;
+          email?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -149,8 +188,76 @@ export interface Database {
           id?: string;
           name?: string;
           location?: string;
+          is_active?: boolean;
+          store_code?: string;
+          phone?: string;
+          email?: string;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      store_users: {
+        Row: {
+          id: string;
+          store_id: string;
+          email: string;
+          password_hash: string;
+          name: string;
+          role: string;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+          last_login: string | null;
+        };
+        Insert: {
+          id?: string;
+          store_id: string;
+          email: string;
+          password_hash: string;
+          name: string;
+          role?: string;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+          last_login?: string;
+        };
+        Update: {
+          id?: string;
+          store_id?: string;
+          email?: string;
+          password_hash?: string;
+          name?: string;
+          role?: string;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+          last_login?: string;
+        };
+      };
+      store_sessions: {
+        Row: {
+          id: string;
+          store_user_id: string;
+          session_token: string;
+          expires_at: string;
+          created_at: string;
+          last_accessed: string;
+        };
+        Insert: {
+          id?: string;
+          store_user_id: string;
+          session_token: string;
+          expires_at: string;
+          created_at?: string;
+          last_accessed?: string;
+        };
+        Update: {
+          id?: string;
+          store_user_id?: string;
+          session_token?: string;
+          expires_at?: string;
+          created_at?: string;
+          last_accessed?: string;
         };
       };
       warehouse_inventory: {

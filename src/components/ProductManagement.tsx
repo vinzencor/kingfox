@@ -4,7 +4,7 @@ import { useSupabaseInventory } from '../context/SupabaseInventoryContext';
 import SizeStockManagement from './SizeStockManagement';
 
 function ProductManagement() {
-  const { categories, sizes, loading, error, addCategory, addVariant, addColor, updateStock, addBarcodeGroup } = useSupabaseInventory();
+  const { categories, sizes, sizeStock, loading, error, addCategory, addVariant, addColor, updateStock, addBarcodeGroup } = useSupabaseInventory();
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [showAddVariant, setShowAddVariant] = useState<string | null>(null);
   const [showAddColor, setShowAddColor] = useState<{ categoryId: string; variantId: string } | null>(null);
@@ -70,6 +70,14 @@ function ProductManagement() {
         console.error('Error adding color:', error);
       }
     }
+  };
+
+  // Helper function to get stock for a specific variant, color, and size
+  const getStockForSize = (variantId: string, colorId: string, sizeId: string): number => {
+    const stockItem = sizeStock.find(
+      item => item.variant_id === variantId && item.color_id === colorId && item.size_id === sizeId
+    );
+    return stockItem ? stockItem.warehouse_stock : 0;
   };
 
   const handleStockUpdate = async (categoryId: string, variantId: string, colorId: string, sizeId: string, value: string) => {
@@ -449,7 +457,7 @@ function ProductManagement() {
                         {/* Size Grid */}
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                           {sizes.map(size => {
-                            const stock = color.sizes[size.id] || 0;
+                            const stock = getStockForSize(variant.id, color.id, size.id);
                             const isLowStock = stock > 0 && stock < 10;
                             const isOutOfStock = stock === 0;
 
